@@ -318,6 +318,28 @@ END:VCARD`
         <p className="font-sans text-warm-400 text-sm mt-3 leading-relaxed">
           Voice-powered CRM for conferences. Dictate who you met, get AI-summarized action items, and download contact cards to your phone.
         </p>
+
+        <div className="mt-5 p-4 bg-white/60 rounded-xl border border-cream-200/50">
+          <p className="font-sans text-warm-600 text-xs font-semibold uppercase tracking-wider mb-3">How it works</p>
+          <div className="space-y-2">
+            <div className="flex items-start gap-3">
+              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gold-500 text-white text-xs font-semibold flex items-center justify-center">1</span>
+              <p className="font-sans text-warm-600 text-sm">Tap the <span className="text-gold-600 font-medium">+</span> button to add a new connection</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gold-500 text-white text-xs font-semibold flex items-center justify-center">2</span>
+              <p className="font-sans text-warm-600 text-sm">Fill in basic details and record voice notes about your conversation</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gold-500 text-white text-xs font-semibold flex items-center justify-center">3</span>
+              <p className="font-sans text-warm-600 text-sm">Tap <span className="text-gold-600 font-medium">Generate Summary</span> to create AI-powered insights and action items</p>
+            </div>
+            <div className="flex items-start gap-3">
+              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-gold-500 text-white text-xs font-semibold flex items-center justify-center">4</span>
+              <p className="font-sans text-warm-600 text-sm">Download the <span className="text-gold-600 font-medium">.vcf card</span> to save directly to your phone contacts</p>
+            </div>
+          </div>
+        </div>
       </header>
 
       <div className="px-6 pb-32">
