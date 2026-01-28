@@ -315,6 +315,9 @@ END:VCARD`
         <p className="font-sans text-warm-500 mt-2">
           {contacts.length} connection{contacts.length !== 1 ? 's' : ''} captured
         </p>
+        <p className="font-sans text-warm-400 text-sm mt-3 leading-relaxed">
+          Voice-powered CRM for conferences. Dictate who you met, get AI-summarized action items, and download contact cards to your phone.
+        </p>
       </header>
 
       <div className="px-6 pb-32">
