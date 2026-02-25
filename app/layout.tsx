@@ -1,18 +1,7 @@
-import type { Metadata } from 'next'
-import './globals.css'
+'use client'
 
-export const metadata: Metadata = {
-  title: 'NetworkNote - Voice Contact CRM',
-  description: 'Capture conversations with voice, get AI summaries, and save contacts to your phone',
-  viewport: 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no',
-  themeColor: '#FDF8F3',
-  manifest: '/manifest.json',
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: 'default',
-    title: 'NetworkNote',
-  },
-}
+import { AuthProvider } from '@/lib/AuthContext'
+import './globals.css'
 
 export default function RootLayout({
   children,
@@ -21,8 +10,20 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        <title>NetworkNote - Voice Contact CRM</title>
+        <meta name="description" content="Capture conversations with voice, get AI summaries, and save contacts to your phone" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+        <meta name="theme-color" content="#FDF8F3" />
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="apple-mobile-web-app-title" content="NetworkNote" />
+      </head>
       <body className="antialiased">
-        {children}
+        <AuthProvider>
+          {children}
+        </AuthProvider>
       </body>
     </html>
   )

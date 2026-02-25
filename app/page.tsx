@@ -1,31 +1,38 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { 
-  Mic, MicOff, Upload, User, Sparkles, Download, Plus, 
-  ChevronRight, X, Clock, MapPin, Building, Mail, Phone, 
-  Loader2, Trash2, Edit3, Save
+import { useRouter } from 'next/navigation'
+import {
+  Mic, MicOff, Upload, User, Sparkles, Download, Plus,
+  ChevronRight, X, Clock, MapPin, Building, Mail, Phone,
+  Loader2, Trash2, Edit3, Save, LogOut, LogIn
 } from 'lucide-react'
+import { useAuth } from '@/lib/AuthContext'
+import {
+  Contact,
+  saveContact,
+  loadContacts,
+  deleteContactFromDB
+} from '@/lib/firestore'
 
-// Types
-interface Contact {
-  id: number
-  name: string
-  company?: string
-  role?: string
-  email?: string
-  phone?: string
-  location?: string
-  photo?: string
-  summary?: string
-  keyTopics?: string[]
-  actionItems?: string[]
-  followUpSuggestion?: string
-  rawNotes?: string
-  meetingContext?: string
-  createdAt: string
+// Local storage helpers (for guest mode)
+const STORAGE_KEY = 'networknote_contacts'
+
+const saveToStorage = (contacts: Contact[]) => {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts))
+  }
 }
 
+const loadFromStorage = (): Contact[] => {
+  if (typeof window !== 'undefined') {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    return stored ? JSON.parse(stored) : []
+  }
+  return []
+}
+
+// Form types
 interface FormData {
   name: string
   company: string
@@ -63,24 +70,10 @@ declare global {
   }
 }
 
-// Local storage helpers
-const STORAGE_KEY = 'networknote_contacts'
-
-const saveToStorage = (contacts: Contact[]) => {
-  if (typeof window !== 'undefined') {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts))
-  }
-}
-
-const loadFromStorage = (): Contact[] => {
-  if (typeof window !== 'undefined') {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    return stored ? JSON.parse(stored) : []
-  }
-  return []
-}
-
 export default function NetworkNote() {
+  const { user, loading: authLoading, signOut } = useAuth()
+  const router = useRouter()
+
   const [contacts, setContacts] = useState<Contact[]>([])
   const [currentContact, setCurrentContact] = useState<Contact | null>(null)
   const [isRecording, setIsRecording] = useState(false)
@@ -89,6 +82,7 @@ export default function NetworkNote() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [view, setView] = useState<'list' | 'new' | 'detail'>('list')
   const [speechSupported, setSpeechSupported] = useState(false)
+  const [contactsLoading, setContactsLoading] = useState(true)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     company: '',
@@ -98,22 +92,35 @@ export default function NetworkNote() {
     location: '',
     meetingContext: ''
   })
-  
+
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Load contacts from localStorage on mount
+  // Load contacts: Firestore for signed-in users, localStorage for guests
   useEffect(() => {
-    const stored = loadFromStorage()
-    setContacts(stored)
-  }, [])
+    if (authLoading) return
 
-  // Save contacts to localStorage whenever they change
-  useEffect(() => {
-    if (contacts.length > 0 || loadFromStorage().length > 0) {
-      saveToStorage(contacts)
+    if (user) {
+      // Signed in — load from Firestore
+      const fetchContacts = async () => {
+        try {
+          setContactsLoading(true)
+          const loaded = await loadContacts(user.uid)
+          setContacts(loaded)
+        } catch (error) {
+          console.error('Failed to load contacts:', error)
+        } finally {
+          setContactsLoading(false)
+        }
+      }
+      fetchContacts()
+    } else {
+      // Guest — load from localStorage
+      const stored = loadFromStorage()
+      setContacts(stored)
+      setContactsLoading(false)
     }
-  }, [contacts])
+  }, [user, authLoading])
 
   // Initialize speech recognition
   useEffect(() => {
@@ -123,22 +130,22 @@ export default function NetworkNote() {
       recognitionRef.current.continuous = true
       recognitionRef.current.interimResults = true
       setSpeechSupported(true)
-      
+
       recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
         let finalTranscript = ''
-        
+
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcriptPart = event.results[i][0].transcript
           if (event.results[i].isFinal) {
             finalTranscript += transcriptPart + ' '
           }
         }
-        
+
         if (finalTranscript) {
           setTranscript(prev => prev + finalTranscript)
         }
       }
-      
+
       recognitionRef.current.onerror = (event: SpeechRecognitionErrorEvent) => {
         console.error('Speech recognition error:', event.error)
         setIsRecording(false)
@@ -185,9 +192,9 @@ export default function NetworkNote() {
 
   const processWithAI = async () => {
     if (!transcript.trim()) return
-    
+
     setIsProcessing(true)
-    
+
     try {
       const response = await fetch('/api/process', {
         method: 'POST',
@@ -203,9 +210,9 @@ export default function NetworkNote() {
       }
 
       const parsed = await response.json()
-      
+
       const newContact: Contact = {
-        id: Date.now(),
+        id: crypto.randomUUID(),
         name: parsed.name || formData.name || 'Unknown Contact',
         company: parsed.company || formData.company || undefined,
         role: parsed.role || formData.role || undefined,
@@ -221,17 +228,22 @@ export default function NetworkNote() {
         meetingContext: formData.meetingContext || undefined,
         createdAt: new Date().toISOString()
       }
-      
+
+      if (user) {
+        await saveContact(user.uid, newContact)
+      } else {
+        saveToStorage([newContact, ...contacts])
+      }
       setContacts(prev => [newContact, ...prev])
       setCurrentContact(newContact)
       setView('detail')
       resetForm()
-      
+
     } catch (error) {
       console.error('AI processing error:', error)
       // Fallback: create contact with raw data
       const fallbackContact: Contact = {
-        id: Date.now(),
+        id: crypto.randomUUID(),
         name: formData.name || 'New Contact',
         company: formData.company || undefined,
         role: formData.role || undefined,
@@ -247,12 +259,17 @@ export default function NetworkNote() {
         meetingContext: formData.meetingContext || undefined,
         createdAt: new Date().toISOString()
       }
+      if (user) {
+        await saveContact(user.uid, fallbackContact)
+      } else {
+        saveToStorage([fallbackContact, ...contacts])
+      }
       setContacts(prev => [fallbackContact, ...prev])
       setCurrentContact(fallbackContact)
       setView('detail')
       resetForm()
     }
-    
+
     setIsProcessing(false)
   }
 
@@ -270,10 +287,30 @@ export default function NetworkNote() {
     })
   }
 
-  const deleteContact = (id: number) => {
-    setContacts(prev => prev.filter(c => c.id !== id))
-    setView('list')
-    setCurrentContact(null)
+  const deleteContact = async (id: string) => {
+    try {
+      if (user) {
+        await deleteContactFromDB(user.uid, id)
+      }
+      const updated = contacts.filter(c => c.id !== id)
+      setContacts(updated)
+      if (!user) {
+        saveToStorage(updated)
+      }
+      setView('list')
+      setCurrentContact(null)
+    } catch (error) {
+      console.error('Failed to delete contact:', error)
+    }
+  }
+
+  const handleSignOut = async () => {
+    try {
+      await signOut()
+      router.push('/auth')
+    } catch (error) {
+      console.error('Failed to sign out:', error)
+    }
   }
 
   const generateVCard = (contact: Contact) => {
@@ -305,14 +342,51 @@ END:VCARD`
     ['#D4A8E8', '#B488C8']
   ]
 
+  // Show loading state while checking auth
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-cream-50 to-cream-100 flex items-center justify-center">
+        <Loader2 size={32} className="text-gold-500 animate-spin" />
+      </div>
+    )
+  }
+
   // Contact List View
   const ListView = () => (
     <div className="min-h-screen bg-gradient-to-b from-cream-50 to-cream-100">
       <header className="px-6 pt-12 pb-8">
-        <h1 className="font-display text-4xl font-semibold text-warm-900 tracking-tight">
-          Your Network
-        </h1>
-        <p className="font-sans text-warm-500 mt-2">
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="font-display text-4xl font-semibold text-warm-900 tracking-tight">
+            Your Network
+          </h1>
+          {user ? (
+            <button
+              onClick={handleSignOut}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-warm-500/10 hover:bg-warm-500/20 transition-colors"
+            >
+              <LogOut size={16} className="text-warm-500" />
+              <span className="font-sans text-sm text-warm-500">Sign Out</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => router.push('/auth')}
+              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-gold-500/15 hover:bg-gold-500/25 transition-colors"
+            >
+              <LogIn size={16} className="text-gold-600" />
+              <span className="font-sans text-sm text-gold-600 font-medium">Sign In</span>
+            </button>
+          )}
+        </div>
+        {user ? (
+          <p className="font-sans text-warm-400 text-sm mb-1">
+            {user.email}
+          </p>
+        ) : (
+          <p className="font-sans text-warm-400 text-sm mb-1">
+            Guest mode — <span className="text-gold-500">sign in</span> to sync across devices
+          </p>
+        )}
+        <p className="font-sans text-warm-500 mt-1">
           {contacts.length} connection{contacts.length !== 1 ? 's' : ''} captured
         </p>
         <p className="font-sans text-warm-400 text-sm mt-3 leading-relaxed">
@@ -343,7 +417,12 @@ END:VCARD`
       </header>
 
       <div className="px-6 pb-32">
-        {contacts.length === 0 ? (
+        {contactsLoading ? (
+          <div className="text-center py-16">
+            <Loader2 size={32} className="text-gold-500 animate-spin mx-auto mb-4" />
+            <p className="font-sans text-warm-500">Loading your contacts...</p>
+          </div>
+        ) : contacts.length === 0 ? (
           <div className="text-center py-16">
             <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-gradient-to-br from-cream-200 to-cream-300 flex items-center justify-center">
               <User size={32} className="text-gold-600" />
@@ -366,13 +445,13 @@ END:VCARD`
               >
                 <div className="bg-white rounded-2xl p-5 shadow-sm border border-cream-200/50 flex items-center gap-4">
                   {contact.photo ? (
-                    <img 
-                      src={contact.photo} 
+                    <img
+                      src={contact.photo}
                       alt={contact.name}
                       className="w-14 h-14 rounded-2xl object-cover"
                     />
                   ) : (
-                    <div 
+                    <div
                       className="w-14 h-14 rounded-2xl flex items-center justify-center text-white font-display text-xl font-semibold"
                       style={{
                         background: `linear-gradient(135deg, ${avatarColors[idx % 5][0]} 0%, ${avatarColors[idx % 5][1]} 100%)`
@@ -412,7 +491,7 @@ END:VCARD`
   const NewContactView = () => (
     <div className="min-h-screen bg-gradient-to-b from-cream-50 to-cream-100">
       <header className="px-6 pt-8 pb-6 flex items-center justify-between">
-        <button 
+        <button
           onClick={() => { setView('list'); resetForm() }}
           className="bg-warm-500/10 rounded-xl p-3"
         >
@@ -437,9 +516,8 @@ END:VCARD`
           />
           <button
             onClick={() => fileInputRef.current?.click()}
-            className={`w-24 h-24 rounded-3xl overflow-hidden transition-all ${
-              photo ? '' : 'border-2 border-dashed border-cream-400 bg-cream-400/10 hover:border-gold-500'
-            }`}
+            className={`w-24 h-24 rounded-3xl overflow-hidden transition-all ${photo ? '' : 'border-2 border-dashed border-cream-400 bg-cream-400/10 hover:border-gold-500'
+              }`}
           >
             {photo ? (
               <img src={photo} alt="Contact" className="w-full h-full object-cover" />
@@ -457,7 +535,7 @@ END:VCARD`
           <h3 className="font-sans font-semibold text-warm-900 mb-4 text-sm uppercase tracking-wider">
             Quick Details
           </h3>
-          
+
           <div className="space-y-3">
             {[
               { key: 'name', placeholder: 'Name', type: 'text' },
@@ -484,7 +562,7 @@ END:VCARD`
           <h3 className="font-sans font-semibold text-warm-900 mb-4 text-sm uppercase tracking-wider">
             Conversation Notes
           </h3>
-          
+
           <p className="font-sans text-warm-500 text-sm mb-6 leading-relaxed">
             Dictate what you discussed, their interests, potential collaborations, or anything memorable about them.
           </p>
@@ -493,23 +571,22 @@ END:VCARD`
             <button
               onClick={toggleRecording}
               disabled={!speechSupported}
-              className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${
-                !speechSupported 
-                  ? 'bg-cream-300 cursor-not-allowed'
-                  : isRecording 
-                    ? 'bg-gradient-to-br from-red-400 to-red-500 shadow-lg shadow-red-500/40 animate-pulse-recording'
-                    : 'bg-gradient-to-br from-gold-400 to-gold-500 shadow-lg shadow-gold-500/30 hover:scale-105'
-              }`}
+              className={`w-20 h-20 rounded-full flex items-center justify-center transition-all ${!speechSupported
+                ? 'bg-cream-300 cursor-not-allowed'
+                : isRecording
+                  ? 'bg-gradient-to-br from-red-400 to-red-500 shadow-lg shadow-red-500/40 animate-pulse-recording'
+                  : 'bg-gradient-to-br from-gold-400 to-gold-500 shadow-lg shadow-gold-500/30 hover:scale-105'
+                }`}
             >
               {isRecording ? <MicOff size={32} className="text-white" /> : <Mic size={32} className="text-white" />}
             </button>
           </div>
-          
+
           <p className={`text-center font-sans text-sm ${isRecording ? 'text-red-500 font-medium' : 'text-warm-500'}`}>
-            {!speechSupported 
+            {!speechSupported
               ? 'Voice not supported in this browser'
-              : isRecording 
-                ? 'Listening... tap to stop' 
+              : isRecording
+                ? 'Listening... tap to stop'
                 : 'Tap to start recording'}
           </p>
 
@@ -529,11 +606,10 @@ END:VCARD`
         <button
           onClick={processWithAI}
           disabled={!transcript.trim() || isProcessing}
-          className={`w-full py-4 rounded-2xl font-sans font-semibold flex items-center justify-center gap-3 transition-all ${
-            transcript.trim() && !isProcessing
-              ? 'bg-gradient-to-r from-warm-900 to-warm-800 text-white shadow-lg shadow-warm-900/20'
-              : 'bg-cream-300 text-warm-500 cursor-not-allowed'
-          }`}
+          className={`w-full py-4 rounded-2xl font-sans font-semibold flex items-center justify-center gap-3 transition-all ${transcript.trim() && !isProcessing
+            ? 'bg-gradient-to-r from-warm-900 to-warm-800 text-white shadow-lg shadow-warm-900/20'
+            : 'bg-cream-300 text-warm-500 cursor-not-allowed'
+            }`}
         >
           {isProcessing ? (
             <>
@@ -554,11 +630,11 @@ END:VCARD`
   // Contact Detail View
   const DetailView = () => {
     if (!currentContact) return null
-    
+
     return (
       <div className="min-h-screen bg-gradient-to-b from-cream-50 to-cream-100">
         <header className="px-6 pt-8 pb-6 flex items-center justify-between">
-          <button 
+          <button
             onClick={() => setView('list')}
             className="bg-warm-500/10 rounded-xl p-3"
           >
@@ -567,7 +643,7 @@ END:VCARD`
           <h2 className="font-display text-xl font-semibold text-warm-900">
             Connection Details
           </h2>
-          <button 
+          <button
             onClick={() => deleteContact(currentContact.id)}
             className="bg-red-500/10 rounded-xl p-3"
           >
@@ -579,8 +655,8 @@ END:VCARD`
           {/* Profile Header */}
           <div className="text-center">
             {currentContact.photo ? (
-              <img 
-                src={currentContact.photo} 
+              <img
+                src={currentContact.photo}
                 alt={currentContact.name}
                 className="w-24 h-24 rounded-3xl object-cover mx-auto mb-4 shadow-lg shadow-warm-500/20"
               />
@@ -589,17 +665,17 @@ END:VCARD`
                 {currentContact.name.charAt(0).toUpperCase()}
               </div>
             )}
-            
+
             <h1 className="font-display text-2xl font-semibold text-warm-900 mb-1">
               {currentContact.name}
             </h1>
-            
+
             {(currentContact.role || currentContact.company) && (
               <p className="font-sans text-warm-500">
                 {[currentContact.role, currentContact.company].filter(Boolean).join(' @ ')}
               </p>
             )}
-            
+
             {currentContact.meetingContext && (
               <div className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-gold-500/15 rounded-full">
                 <MapPin size={14} className="text-gold-500" />
@@ -728,9 +804,9 @@ END:VCARD`
 
   return (
     <div className="max-w-md mx-auto min-h-screen">
-      {view === 'list' && <ListView />}
-      {view === 'new' && <NewContactView />}
-      {view === 'detail' && <DetailView />}
+      {view === 'list' && ListView()}
+      {view === 'new' && NewContactView()}
+      {view === 'detail' && DetailView()}
     </div>
   )
 }
