@@ -1,5 +1,3 @@
-'use client'
-
 import { AuthProvider } from '@/lib/AuthContext'
 import './globals.css'
 
@@ -20,7 +18,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="NetworkNote" />
       </head>
-      <body className="antialiased">
+      <body className="antialiased" suppressHydrationWarning>
         <AuthProvider>
           {children}
         </AuthProvider>

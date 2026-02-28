@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(cd:*)",
+      "Bash(cd C:/Users/victo/Documents/NetworkNote/network-note && npm run build 2>&1)",
+      "Bash(cd C:/Users/victo/Documents/NetworkNote/network-note && node scripts/seed-contact.mjs 2>&1)",
+      "Bash(cd C:/Users/victo/Documents/NetworkNote/network-note && node scripts/seed-contact.mjs --email victorliu8513@gmail.com --password 123456 2>&1)",
+      "Bash(cd /c/Users/victo/Documents/NetworkNote/network-note && npm install @sendgrid/mail 2>&1)",
+      "Bash(cd /c/Users/victo/Documents/NetworkNote/network-note && npm run build 2>&1)",
+      "Bash(cd /c/Users/victo/Documents/NetworkNote/network-note && npm install firebase-admin 2>&1)"
+    ]
+  }
+}

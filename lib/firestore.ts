@@ -25,6 +25,10 @@ export interface Contact {
     rawNotes?: string
     meetingContext?: string
     createdAt: string
+    followUpDelayHours?: number
+    followUpScheduledAt?: string
+    followUpStatus?: 'pending' | 'sent' | 'skipped'
+    followUpSentAt?: string
 }
 
 function contactsCollection(userId: string) {

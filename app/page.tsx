@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   Mic, MicOff, Upload, User, Sparkles, Download, Plus,
   ChevronRight, X, Clock, MapPin, Building, Mail, Phone,
-  Loader2, Trash2, Edit3, Save, LogOut, LogIn
+  Loader2, Trash2, Edit3, Save, LogOut, LogIn, Send
 } from 'lucide-react'
 import { useAuth } from '@/lib/AuthContext'
 import {
@@ -41,7 +41,17 @@ interface FormData {
   phone: string
   location: string
   meetingContext: string
+  followUpDelayHours: number
 }
+
+const FOLLOW_UP_OPTIONS = [
+  { label: 'None', hours: 0 },
+  { label: '1 min', hours: 1 / 60 },
+  { label: '1 hour', hours: 1 },
+  { label: '24 hours', hours: 24 },
+  { label: '3 days', hours: 72 },
+  { label: '1 week', hours: 168 },
+]
 
 // Speech Recognition types
 interface SpeechRecognitionEvent {
@@ -83,6 +93,7 @@ export default function NetworkNote() {
   const [view, setView] = useState<'list' | 'new' | 'detail'>('list')
   const [speechSupported, setSpeechSupported] = useState(false)
   const [contactsLoading, setContactsLoading] = useState(true)
+  const [testEmailStatus, setTestEmailStatus] = useState<null | 'sending' | 'sent' | 'error'>(null)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     company: '',
@@ -90,12 +101,12 @@ export default function NetworkNote() {
     email: '',
     phone: '',
     location: '',
-    meetingContext: ''
+    meetingContext: '',
+    followUpDelayHours: 24
   })
 
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-
   // Load contacts: Firestore for signed-in users, localStorage for guests
   useEffect(() => {
     if (authLoading) return
@@ -211,12 +222,13 @@ export default function NetworkNote() {
 
       const parsed = await response.json()
 
+      const contactEmail = parsed.email || formData.email || undefined
       const newContact: Contact = {
         id: crypto.randomUUID(),
         name: parsed.name || formData.name || 'Unknown Contact',
         company: parsed.company || formData.company || undefined,
         role: parsed.role || formData.role || undefined,
-        email: parsed.email || formData.email || undefined,
+        email: contactEmail,
         phone: parsed.phone || formData.phone || undefined,
         location: parsed.location || formData.location || undefined,
         photo: photo || undefined,
@@ -226,7 +238,16 @@ export default function NetworkNote() {
         followUpSuggestion: parsed.followUpSuggestion,
         rawNotes: transcript,
         meetingContext: formData.meetingContext || undefined,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        followUpDelayHours: formData.followUpDelayHours,
+        followUpScheduledAt: contactEmail && formData.followUpDelayHours > 0
+          ? new Date(Date.now() + formData.followUpDelayHours * 3600000).toISOString()
+          : undefined,
+        followUpStatus: !contactEmail
+          ? 'skipped'
+          : formData.followUpDelayHours > 0
+            ? 'pending'
+            : 'skipped',
       }
 
       if (user) {
@@ -242,12 +263,13 @@ export default function NetworkNote() {
     } catch (error) {
       console.error('AI processing error:', error)
       // Fallback: create contact with raw data
+      const fallbackEmail = formData.email || undefined
       const fallbackContact: Contact = {
         id: crypto.randomUUID(),
         name: formData.name || 'New Contact',
         company: formData.company || undefined,
         role: formData.role || undefined,
-        email: formData.email || undefined,
+        email: fallbackEmail,
         phone: formData.phone || undefined,
         location: formData.location || undefined,
         photo: photo || undefined,
@@ -257,7 +279,16 @@ export default function NetworkNote() {
         actionItems: [],
         followUpSuggestion: 'Review notes and follow up as appropriate',
         meetingContext: formData.meetingContext || undefined,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        followUpDelayHours: formData.followUpDelayHours,
+        followUpScheduledAt: fallbackEmail && formData.followUpDelayHours > 0
+          ? new Date(Date.now() + formData.followUpDelayHours * 3600000).toISOString()
+          : undefined,
+        followUpStatus: !fallbackEmail
+          ? 'skipped'
+          : formData.followUpDelayHours > 0
+            ? 'pending'
+            : 'skipped',
       }
       if (user) {
         await saveContact(user.uid, fallbackContact)
@@ -283,7 +314,8 @@ export default function NetworkNote() {
       email: '',
       phone: '',
       location: '',
-      meetingContext: ''
+      meetingContext: '',
+      followUpDelayHours: 24
     })
   }
 
@@ -310,6 +342,59 @@ export default function NetworkNote() {
       router.push('/auth')
     } catch (error) {
       console.error('Failed to sign out:', error)
+    }
+  }
+
+  const sendFollowUpNow = async (contact: Contact) => {
+    if (!user) return
+    try {
+      const res = await fetch('/api/send-followup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.uid, contactId: contact.id }),
+      })
+      if (res.ok) {
+        const updated: Contact = {
+          ...contact,
+          followUpStatus: 'sent',
+          followUpSentAt: new Date().toISOString(),
+        }
+        setCurrentContact(updated)
+        setContacts((prev) => prev.map((c) => (c.id === contact.id ? updated : c)))
+      }
+    } catch (err) {
+      console.error('Failed to send follow-up:', err)
+    }
+  }
+
+  const sendTestEmail = async () => {
+    if (!user || testEmailStatus === 'sending') return
+    const target = contacts[0]
+    if (!target) return
+    setTestEmailStatus('sending')
+    try {
+      const res = await fetch('/api/send-followup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.uid, contactId: target.id, overrideTo: 'vkliu@uw.edu' }),
+      })
+      if (res.ok) {
+        setTestEmailStatus('sent')
+        setContacts((prev) =>
+          prev.map((c) =>
+            c.id === target.id
+              ? { ...c, followUpStatus: 'sent', followUpSentAt: new Date().toISOString() }
+              : c
+          )
+        )
+        setTimeout(() => setTestEmailStatus(null), 4000)
+      } else {
+        setTestEmailStatus('error')
+        setTimeout(() => setTestEmailStatus(null), 4000)
+      }
+    } catch {
+      setTestEmailStatus('error')
+      setTimeout(() => setTestEmailStatus(null), 4000)
     }
   }
 
@@ -389,6 +474,31 @@ END:VCARD`
         <p className="font-sans text-warm-500 mt-1">
           {contacts.length} connection{contacts.length !== 1 ? 's' : ''} captured
         </p>
+
+        {user && contacts.length > 0 && (
+          <button
+            onClick={sendTestEmail}
+            disabled={testEmailStatus === 'sending'}
+            className={`mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl font-sans text-sm font-medium transition-all ${
+              testEmailStatus === 'sent'
+                ? 'bg-green-100 text-green-700'
+                : testEmailStatus === 'error'
+                  ? 'bg-red-100 text-red-600'
+                  : 'bg-gold-500/15 text-gold-700 hover:bg-gold-500/25 active:scale-95'
+            }`}
+          >
+            {testEmailStatus === 'sending' ? (
+              <><Loader2 size={15} className="animate-spin" /> Sending email…</>
+            ) : testEmailStatus === 'sent' ? (
+              <><Send size={15} /> Email sent to vkliu@uw.edu!</>
+            ) : testEmailStatus === 'error' ? (
+              <><X size={15} /> Failed — check console</>
+            ) : (
+              <><Send size={15} /> Send test follow-up email</>
+            )}
+          </button>
+        )}
+
         <p className="font-sans text-warm-400 text-sm mt-3 leading-relaxed">
           Voice-powered CRM for conferences. Dictate who you met, get AI-summarized action items, and download contact cards to your phone.
         </p>
@@ -602,6 +712,44 @@ END:VCARD`
           )}
         </div>
 
+        {/* Follow-up Email */}
+        <div className="bg-white rounded-2xl p-6 shadow-sm">
+          <h3 className="font-sans font-semibold text-warm-900 mb-1 text-sm uppercase tracking-wider">
+            Follow-up Email
+          </h3>
+          <p className="font-sans text-warm-500 text-sm mb-4">
+            Auto-send a personalized follow-up after saving
+          </p>
+
+          <div className="flex flex-wrap gap-2 mb-3">
+            {FOLLOW_UP_OPTIONS.map((opt) => (
+              <button
+                key={opt.hours}
+                onClick={() => setFormData((prev) => ({ ...prev, followUpDelayHours: opt.hours }))}
+                className={`px-3 py-2 rounded-xl font-sans text-sm transition-all ${
+                  formData.followUpDelayHours === opt.hours
+                    ? 'bg-gradient-to-br from-gold-400 to-gold-500 text-white font-medium shadow-sm'
+                    : 'bg-cream-100 text-warm-600 hover:bg-cream-200'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {formData.followUpDelayHours > 0 && (
+            formData.email ? (
+              <p className="font-sans text-warm-500 text-xs">
+                Email will be sent to <span className="text-warm-700 font-medium">{formData.email}</span>
+              </p>
+            ) : (
+              <p className="font-sans text-warm-400 text-xs italic">
+                Add an email above to schedule a follow-up
+              </p>
+            )
+          )}
+        </div>
+
         {/* Process Button */}
         <button
           onClick={processWithAI}
@@ -774,6 +922,46 @@ END:VCARD`
               <p className="font-sans text-warm-700 leading-relaxed">
                 {currentContact.followUpSuggestion}
               </p>
+            </div>
+          )}
+
+          {/* Follow-up Email Status */}
+          {currentContact.followUpStatus === 'pending' && (
+            <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <Clock size={18} className="text-amber-500 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="font-sans font-semibold text-amber-700 text-sm">Follow-up scheduled</p>
+                  {currentContact.followUpScheduledAt && (
+                    <p className="font-sans text-amber-600 text-xs mt-0.5">
+                      {new Date(currentContact.followUpScheduledAt).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+              </div>
+              {user && (
+                <button
+                  onClick={() => sendFollowUpNow(currentContact)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500 text-white font-sans text-sm font-medium hover:bg-amber-600 active:scale-95 transition-all flex-shrink-0"
+                >
+                  <Send size={14} />
+                  Send Now
+                </button>
+              )}
+            </div>
+          )}
+
+          {currentContact.followUpStatus === 'sent' && (
+            <div className="bg-green-50 rounded-2xl p-5 border border-green-200 flex items-center gap-3">
+              <Send size={18} className="text-green-500 flex-shrink-0" />
+              <div>
+                <p className="font-sans font-semibold text-green-700 text-sm">Follow-up sent</p>
+                {currentContact.followUpSentAt && (
+                  <p className="font-sans text-green-600 text-xs mt-0.5">
+                    {new Date(currentContact.followUpSentAt).toLocaleString()}
+                  </p>
+                )}
+              </div>
             </div>
           )}
 
