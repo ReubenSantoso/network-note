@@ -25,9 +25,8 @@ export interface Contact {
     rawNotes?: string
     meetingContext?: string
     createdAt: string
-    followUpDelayHours?: number
-    followUpScheduledAt?: string
-    followUpStatus?: 'pending' | 'sent' | 'skipped'
+    followUpStatus?: 'pending' | 'draft_sent' | 'sent' | 'skipped'
+    followUpDraft?: { subject: string; body: string }
     followUpSentAt?: string
 }
 

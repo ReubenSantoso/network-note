@@ -41,17 +41,7 @@ interface FormData {
   phone: string
   location: string
   meetingContext: string
-  followUpDelayHours: number
 }
-
-const FOLLOW_UP_OPTIONS = [
-  { label: 'None', hours: 0 },
-  { label: '1 min', hours: 1 / 60 },
-  { label: '1 hour', hours: 1 },
-  { label: '24 hours', hours: 24 },
-  { label: '3 days', hours: 72 },
-  { label: '1 week', hours: 168 },
-]
 
 // Speech Recognition types
 interface SpeechRecognitionEvent {
@@ -101,8 +91,7 @@ export default function NetworkNote() {
     email: '',
     phone: '',
     location: '',
-    meetingContext: '',
-    followUpDelayHours: 24
+    meetingContext: ''
   })
 
   const recognitionRef = useRef<SpeechRecognition | null>(null)
@@ -239,19 +228,19 @@ export default function NetworkNote() {
         rawNotes: transcript,
         meetingContext: formData.meetingContext || undefined,
         createdAt: new Date().toISOString(),
-        followUpDelayHours: formData.followUpDelayHours,
-        followUpScheduledAt: contactEmail && formData.followUpDelayHours > 0
-          ? new Date(Date.now() + formData.followUpDelayHours * 3600000).toISOString()
-          : undefined,
-        followUpStatus: !contactEmail
-          ? 'skipped'
-          : formData.followUpDelayHours > 0
-            ? 'pending'
-            : 'skipped',
+        followUpStatus: contactEmail ? 'pending' : 'skipped',
       }
 
       if (user) {
         await saveContact(user.uid, newContact)
+        // Immediately trigger draft review email (fire-and-forget)
+        if (contactEmail) {
+          fetch('/api/send-followup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: user.uid, contactId: newContact.id }),
+          }).catch(console.error)
+        }
       } else {
         saveToStorage([newContact, ...contacts])
       }
@@ -280,18 +269,17 @@ export default function NetworkNote() {
         followUpSuggestion: 'Review notes and follow up as appropriate',
         meetingContext: formData.meetingContext || undefined,
         createdAt: new Date().toISOString(),
-        followUpDelayHours: formData.followUpDelayHours,
-        followUpScheduledAt: fallbackEmail && formData.followUpDelayHours > 0
-          ? new Date(Date.now() + formData.followUpDelayHours * 3600000).toISOString()
-          : undefined,
-        followUpStatus: !fallbackEmail
-          ? 'skipped'
-          : formData.followUpDelayHours > 0
-            ? 'pending'
-            : 'skipped',
+        followUpStatus: fallbackEmail ? 'pending' : 'skipped',
       }
       if (user) {
         await saveContact(user.uid, fallbackContact)
+        if (fallbackEmail) {
+          fetch('/api/send-followup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: user.uid, contactId: fallbackContact.id }),
+          }).catch(console.error)
+        }
       } else {
         saveToStorage([fallbackContact, ...contacts])
       }
@@ -314,8 +302,7 @@ export default function NetworkNote() {
       email: '',
       phone: '',
       location: '',
-      meetingContext: '',
-      followUpDelayHours: 24
+      meetingContext: ''
     })
   }
 
@@ -712,44 +699,6 @@ END:VCARD`
           )}
         </div>
 
-        {/* Follow-up Email */}
-        <div className="bg-white rounded-2xl p-6 shadow-sm">
-          <h3 className="font-sans font-semibold text-warm-900 mb-1 text-sm uppercase tracking-wider">
-            Follow-up Email
-          </h3>
-          <p className="font-sans text-warm-500 text-sm mb-4">
-            Auto-send a personalized follow-up after saving
-          </p>
-
-          <div className="flex flex-wrap gap-2 mb-3">
-            {FOLLOW_UP_OPTIONS.map((opt) => (
-              <button
-                key={opt.hours}
-                onClick={() => setFormData((prev) => ({ ...prev, followUpDelayHours: opt.hours }))}
-                className={`px-3 py-2 rounded-xl font-sans text-sm transition-all ${
-                  formData.followUpDelayHours === opt.hours
-                    ? 'bg-gradient-to-br from-gold-400 to-gold-500 text-white font-medium shadow-sm'
-                    : 'bg-cream-100 text-warm-600 hover:bg-cream-200'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-
-          {formData.followUpDelayHours > 0 && (
-            formData.email ? (
-              <p className="font-sans text-warm-500 text-xs">
-                Email will be sent to <span className="text-warm-700 font-medium">{formData.email}</span>
-              </p>
-            ) : (
-              <p className="font-sans text-warm-400 text-xs italic">
-                Add an email above to schedule a follow-up
-              </p>
-            )
-          )}
-        </div>
-
         {/* Process Button */}
         <button
           onClick={processWithAI}
@@ -929,14 +878,22 @@ END:VCARD`
           {currentContact.followUpStatus === 'pending' && (
             <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200 flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
-                <Clock size={18} className="text-amber-500 mt-0.5 flex-shrink-0" />
+                <Loader2 size={18} className="text-amber-500 mt-0.5 flex-shrink-0 animate-spin" />
                 <div>
-                  <p className="font-sans font-semibold text-amber-700 text-sm">Follow-up scheduled</p>
-                  {currentContact.followUpScheduledAt && (
-                    <p className="font-sans text-amber-600 text-xs mt-0.5">
-                      {new Date(currentContact.followUpScheduledAt).toLocaleString()}
-                    </p>
-                  )}
+                  <p className="font-sans font-semibold text-amber-700 text-sm">Generating draft…</p>
+                  <p className="font-sans text-amber-600 text-xs mt-0.5">Review email on its way to your inbox</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {currentContact.followUpStatus === 'draft_sent' && (
+            <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <Mail size={18} className="text-amber-500 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="font-sans font-semibold text-amber-700 text-sm">Draft sent to your inbox</p>
+                  <p className="font-sans text-amber-600 text-xs mt-0.5">Click "Send it" or "Try again" in your email</p>
                 </div>
               </div>
               {user && (
@@ -945,7 +902,7 @@ END:VCARD`
                   className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500 text-white font-sans text-sm font-medium hover:bg-amber-600 active:scale-95 transition-all flex-shrink-0"
                 >
                   <Send size={14} />
-                  Send Now
+                  Resend Draft
                 </button>
               )}
             </div>
@@ -955,7 +912,7 @@ END:VCARD`
             <div className="bg-green-50 rounded-2xl p-5 border border-green-200 flex items-center gap-3">
               <Send size={18} className="text-green-500 flex-shrink-0" />
               <div>
-                <p className="font-sans font-semibold text-green-700 text-sm">Follow-up sent</p>
+                <p className="font-sans font-semibold text-green-700 text-sm">Follow-up sent to {currentContact.name}</p>
                 {currentContact.followUpSentAt && (
                   <p className="font-sans text-green-600 text-xs mt-0.5">
                     {new Date(currentContact.followUpSentAt).toLocaleString()}
