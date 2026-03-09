@@ -25,11 +25,8 @@ Write a follow-up email that:
 
 ${variationHint || ''}
 
-Respond in JSON only — no markdown, no backticks, no extra text:
-{
-  "subject": "subject line here",
-  "body": "full email body here, use \\n for line breaks"
-}`
+Respond with only a single JSON object. No markdown, no code fences, no explanation before or after. Example:
+{"subject": "Your subject line", "body": "First paragraph.\n\nSecond paragraph.\n\nSign-off"}`
   return base.trim()
 }
 
