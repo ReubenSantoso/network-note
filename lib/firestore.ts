@@ -51,7 +51,10 @@ export async function saveContact(userId: string, contact: Contact): Promise<voi
 export async function loadContacts(userId: string): Promise<Contact[]> {
     const q = query(contactsCollection(userId), orderBy('createdAt', 'desc'))
     const snapshot = await getDocs(q)
-    return snapshot.docs.map((doc) => doc.data() as Contact)
+    return snapshot.docs.map((d) => {
+      const data = d.data() as Contact
+      return { ...data, id: data.id ?? d.id } as Contact
+    })
 }
 
 export async function deleteContactFromDB(userId: string, contactId: string): Promise<void> {

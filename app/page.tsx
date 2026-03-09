@@ -196,9 +196,9 @@ export default function NetworkNote() {
 
   const processWithAI = async () => {
     if (!transcript.trim()) return
+    if (isProcessing) return
 
     setIsProcessing(true)
-
     try {
       const response = await fetch('/api/process', {
         method: 'POST',
@@ -237,7 +237,6 @@ export default function NetworkNote() {
 
       if (user) {
         await saveContact(user.uid, newContact)
-        // 10 seconds later: email the logged-in user a reminder to follow up (with action items)
         if (user.email) {
           const contactIdToRemind = newContact.id
           const uid = user.uid
@@ -245,7 +244,7 @@ export default function NetworkNote() {
           setTimeout(() => {
             ;(async () => {
               try {
-                const res = await fetch('/api/send-followup-reminder', {
+                await fetch('/api/send-followup-reminder', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -254,12 +253,28 @@ export default function NetworkNote() {
                     userEmail: userEmailToRemind,
                   }),
                 })
-                if (!res.ok) {
-                  const errBody = await res.text()
-                  console.error('Follow-up reminder failed:', res.status, errBody)
-                }
               } catch (err) {
                 console.error('Failed to send follow-up reminder:', err)
+              }
+              if (contactEmail) {
+                try {
+                  const draftRes = await fetch('/api/generate-draft', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId: uid, contactId: contactIdToRemind }),
+                  })
+                  if (draftRes.ok) {
+                    const data = await draftRes.json()
+                    const subject = data.subject != null ? String(data.subject).trim() : ''
+                    const body = data.body != null ? String(data.body).trim() : ''
+                    if (subject && body) {
+                      setContacts(prev => prev.map(c => c.id === contactIdToRemind ? { ...c, followUpStatus: 'draft_sent' as const, followUpDraft: { subject, body }, followUpChatHistory: [] } : c))
+                      setCurrentContact(prev => prev && prev.id === contactIdToRemind ? { ...prev, followUpStatus: 'draft_sent', followUpDraft: { subject, body }, followUpChatHistory: [] } : prev)
+                    }
+                  }
+                } catch (err) {
+                  console.error('Failed to generate draft (10s):', err)
+                }
               }
             })()
           }, 10_000)
@@ -274,7 +289,6 @@ export default function NetworkNote() {
 
     } catch (error) {
       console.error('AI processing error:', error)
-      // Fallback: create contact with raw data
       const fallbackEmail = formData.email || undefined
       const fallbackContact: Contact = {
         id: crypto.randomUUID(),
@@ -303,7 +317,7 @@ export default function NetworkNote() {
           setTimeout(() => {
             ;(async () => {
               try {
-                const res = await fetch('/api/send-followup-reminder', {
+                await fetch('/api/send-followup-reminder', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -312,12 +326,28 @@ export default function NetworkNote() {
                     userEmail: userEmailToRemind,
                   }),
                 })
-                if (!res.ok) {
-                  const errBody = await res.text()
-                  console.error('Follow-up reminder failed:', res.status, errBody)
-                }
               } catch (err) {
                 console.error('Failed to send follow-up reminder:', err)
+              }
+              if (fallbackEmail) {
+                try {
+                  const draftRes = await fetch('/api/generate-draft', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId: uid, contactId: contactIdToRemind }),
+                  })
+                  if (draftRes.ok) {
+                    const data = await draftRes.json()
+                    const subject = data.subject != null ? String(data.subject).trim() : ''
+                    const body = data.body != null ? String(data.body).trim() : ''
+                    if (subject && body) {
+                      setContacts(prev => prev.map(c => c.id === contactIdToRemind ? { ...c, followUpStatus: 'draft_sent' as const, followUpDraft: { subject, body }, followUpChatHistory: [] } : c))
+                      setCurrentContact(prev => prev && prev.id === contactIdToRemind ? { ...prev, followUpStatus: 'draft_sent', followUpDraft: { subject, body }, followUpChatHistory: [] } : prev)
+                    }
+                  }
+                } catch (err) {
+                  console.error('Failed to generate draft (10s fallback):', err)
+                }
               }
             })()
           }, 10_000)
@@ -329,9 +359,9 @@ export default function NetworkNote() {
       setCurrentContact(fallbackContact)
       setView('detail')
       resetForm()
+    } finally {
+      setIsProcessing(false)
     }
-
-    setIsProcessing(false)
   }
 
   const resetForm = () => {
@@ -412,10 +442,12 @@ export default function NetworkNote() {
       })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
+        const subject = data.subject != null ? String(data.subject).trim() : ''
+        const body = data.body != null ? String(data.body).trim() : ''
         const updated: Contact = {
           ...contact,
           followUpStatus: 'draft_sent',
-          followUpDraft: data.subject != null && data.body != null ? { subject: data.subject, body: data.body } : undefined,
+          followUpDraft: subject && body ? { subject, body } : undefined,
           followUpChatHistory: [],
         }
         setCurrentContact(updated)
@@ -455,7 +487,7 @@ export default function NetworkNote() {
           history,
         }),
       })
-      const data = await res.json()
+      const data = await res.json().catch(() => ({}))
       if (res.ok && data.subject != null && data.body != null) {
         const updated: Contact = {
           ...contact,
@@ -1018,69 +1050,70 @@ END:VCARD`
 
           {currentContact.followUpStatus === 'draft_sent' && currentContact.followUpDraft && (
             <div className="space-y-4">
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-cream-200/50">
-                <div className="flex items-center gap-2 mb-3">
-                  <Mail size={16} className="text-gold-500" />
-                  <h3 className="font-sans font-semibold text-warm-900 text-sm uppercase tracking-wider">
-                    Follow-up draft
-                  </h3>
-                </div>
-                {currentContact.email && (
-                  <p className="font-sans text-warm-600 text-xs mb-3 px-3 py-2 bg-gold-500/10 rounded-lg border border-gold-500/20">
-                    Will be sent to: <span className="font-medium text-warm-800">{currentContact.email}</span>
-                  </p>
-                )}
-                <p className="font-sans text-warm-700 text-sm font-medium mb-1">Subject: {currentContact.followUpDraft.subject}</p>
-                <div className="font-sans text-warm-700 text-sm whitespace-pre-wrap leading-relaxed border-t border-cream-200 pt-3 mt-3">
-                  {currentContact.followUpDraft.body}
-                </div>
-              </div>
-
-              <div className="bg-white rounded-2xl p-5 shadow-sm border border-cream-200/50">
-                <div className="flex items-center gap-2 mb-3">
-                  <MessageSquare size={16} className="text-gold-500" />
-                  <h3 className="font-sans font-semibold text-warm-900 text-sm uppercase tracking-wider">
-                    Edit with AI
-                  </h3>
-                </div>
-                <p className="font-sans text-warm-600 text-xs mb-3">
-                  Ask for changes (e.g. &quot;make it shorter&quot;, &quot;mention the project&quot;, or &quot;send to john@work.com instead&quot;).
-                </p>
-                {(currentContact.followUpChatHistory ?? []).length > 0 && (
-                  <div className="space-y-2 mb-4 max-h-40 overflow-y-auto">
-                    {currentContact.followUpChatHistory!.map((m, i) => (
-                      <div
-                        key={i}
-                        className={`rounded-lg px-3 py-2 text-sm ${m.role === 'user' ? 'bg-gold-500/15 text-warm-800 ml-4' : 'bg-cream-100 text-warm-700 mr-4'}`}
-                      >
-                        {m.content}
-                      </div>
-                    ))}
+              <div className="bg-white rounded-2xl shadow-sm border border-cream-200/50 overflow-hidden">
+                {/* Draft header + content */}
+                <div className="p-6 pb-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Mail size={16} className="text-gold-500" />
+                    <h3 className="font-sans font-semibold text-warm-900 text-sm uppercase tracking-wider">
+                      Follow-up draft
+                    </h3>
                   </div>
-                )}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={followupChatInput}
-                    onChange={(e) => setFollowupChatInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        sendFollowupChatMessage(currentContact, followupChatInput)
-                      }
-                    }}
-                    placeholder="e.g. Make it friendlier"
-                    className="flex-1 px-4 py-2.5 rounded-xl border border-cream-200 bg-cream-50 font-sans text-sm focus:border-gold-500 focus:outline-none"
-                    disabled={followupChatSending}
-                  />
-                  <button
-                    onClick={() => sendFollowupChatMessage(currentContact, followupChatInput)}
-                    disabled={followupChatSending || !followupChatInput.trim()}
-                    className="px-4 py-2.5 rounded-xl bg-gold-500 text-white font-sans text-sm font-medium disabled:opacity-50 flex items-center gap-1.5"
-                  >
-                    {followupChatSending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                    Send
-                  </button>
+                  {currentContact.email && (
+                    <p className="font-sans text-warm-600 text-xs mb-3 px-3 py-2 bg-gold-500/10 rounded-lg border border-gold-500/20">
+                      Will be sent to: <span className="font-medium text-warm-800">{currentContact.email}</span>
+                    </p>
+                  )}
+                  <p className="font-sans text-warm-700 text-sm font-medium mb-1">Subject: {currentContact.followUpDraft.subject}</p>
+                  <div className="font-sans text-warm-700 text-sm whitespace-pre-wrap leading-relaxed">
+                    {currentContact.followUpDraft.body}
+                  </div>
+                </div>
+                {/* Edit with AI — same card, separated by border */}
+                <div className="border-t border-cream-200 bg-cream-50/50 px-6 py-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <MessageSquare size={16} className="text-gold-500" />
+                    <span className="font-sans font-semibold text-warm-800 text-sm">Edit with AI</span>
+                  </div>
+                  <p className="font-sans text-warm-600 text-xs mb-3">
+                    Ask for changes (e.g. &quot;make it shorter&quot;, &quot;mention the project&quot;, or &quot;send to john@work.com instead&quot;).
+                  </p>
+                  {(currentContact.followUpChatHistory ?? []).length > 0 && (
+                    <div className="space-y-2 mb-4 max-h-36 overflow-y-auto">
+                      {currentContact.followUpChatHistory!.map((m, i) => (
+                        <div
+                          key={i}
+                          className={`rounded-lg px-3 py-2 text-sm ${m.role === 'user' ? 'bg-gold-500/15 text-warm-800 ml-4' : 'bg-white border border-cream-200 text-warm-700 mr-4'}`}
+                        >
+                          {m.content}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={followupChatInput}
+                      onChange={(e) => setFollowupChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          sendFollowupChatMessage(currentContact, followupChatInput)
+                        }
+                      }}
+                      placeholder="e.g. Make it friendlier"
+                      className="flex-1 px-4 py-2.5 rounded-xl border border-cream-200 bg-white font-sans text-sm focus:border-gold-500 focus:outline-none"
+                      disabled={followupChatSending}
+                    />
+                    <button
+                      onClick={() => sendFollowupChatMessage(currentContact, followupChatInput)}
+                      disabled={followupChatSending || !followupChatInput.trim()}
+                      className="px-4 py-2.5 rounded-xl bg-gold-500 text-white font-sans text-sm font-medium disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                      {followupChatSending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                      Send
+                    </button>
+                  </div>
                 </div>
               </div>
 
