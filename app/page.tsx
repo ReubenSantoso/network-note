@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import {
   Mic, MicOff, Upload, User, Sparkles, Download, Plus,
   ChevronRight, X, Clock, MapPin, Building, Mail, Phone,
-  Loader2, Trash2, Edit3, Save, LogOut, LogIn, Send
+  Loader2, Trash2, Edit3, Save, LogOut, LogIn, Send, MessageSquare
 } from 'lucide-react'
 import { useAuth } from '@/lib/AuthContext'
 import {
@@ -83,7 +83,11 @@ export default function NetworkNote() {
   const [view, setView] = useState<'list' | 'new' | 'detail'>('list')
   const [speechSupported, setSpeechSupported] = useState(false)
   const [contactsLoading, setContactsLoading] = useState(true)
-  const [testEmailStatus, setTestEmailStatus] = useState<null | 'sending' | 'sent' | 'error'>(null)
+  const [followupChatInput, setFollowupChatInput] = useState('')
+  const [followupChatSending, setFollowupChatSending] = useState(false)
+  const [draftGenerating, setDraftGenerating] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
+  const [sendingFollowup, setSendingFollowup] = useState(false)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     company: '',
@@ -233,35 +237,32 @@ export default function NetworkNote() {
 
       if (user) {
         await saveContact(user.uid, newContact)
-        // Trigger draft review email 30 seconds later, then update status to 'draft_sent' on success
-        if (contactEmail && user.email) {
+        // 10 seconds later: email the logged-in user a reminder to follow up (with action items)
+        if (user.email) {
+          const contactIdToRemind = newContact.id
+          const uid = user.uid
+          const userEmailToRemind = user.email
           setTimeout(() => {
             ;(async () => {
               try {
-                const res = await fetch('/api/send-followup', {
+                const res = await fetch('/api/send-followup-reminder', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
-                    userId: user.uid,
-                    contactId: newContact.id,
-                    userEmail: user.email,
+                    userId: uid,
+                    contactId: contactIdToRemind,
+                    userEmail: userEmailToRemind,
                   }),
                 })
-                if (res.ok) {
-                  const updated: Contact = {
-                    ...newContact,
-                    followUpStatus: 'draft_sent',
-                  }
-                  setContacts(prev => prev.map(c => (c.id === newContact.id ? updated : c)))
-                  setCurrentContact(prev =>
-                    prev && prev.id === newContact.id ? updated : prev
-                  )
+                if (!res.ok) {
+                  const errBody = await res.text()
+                  console.error('Follow-up reminder failed:', res.status, errBody)
                 }
               } catch (err) {
-                console.error('Failed to send follow-up draft:', err)
+                console.error('Failed to send follow-up reminder:', err)
               }
             })()
-          }, 30_000)
+          }, 10_000)
         }
       } else {
         saveToStorage([newContact, ...contacts])
@@ -295,34 +296,31 @@ export default function NetworkNote() {
       }
       if (user) {
         await saveContact(user.uid, fallbackContact)
-        if (fallbackEmail && user.email) {
+        if (user.email) {
+          const contactIdToRemind = fallbackContact.id
+          const uid = user.uid
+          const userEmailToRemind = user.email
           setTimeout(() => {
             ;(async () => {
               try {
-                const res = await fetch('/api/send-followup', {
+                const res = await fetch('/api/send-followup-reminder', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
-                    userId: user.uid,
-                    contactId: fallbackContact.id,
-                    userEmail: user.email,
+                    userId: uid,
+                    contactId: contactIdToRemind,
+                    userEmail: userEmailToRemind,
                   }),
                 })
-                if (res.ok) {
-                  const updated: Contact = {
-                    ...fallbackContact,
-                    followUpStatus: 'draft_sent',
-                  }
-                  setContacts(prev => prev.map(c => (c.id === fallbackContact.id ? updated : c)))
-                  setCurrentContact(prev =>
-                    prev && prev.id === fallbackContact.id ? updated : prev
-                  )
+                if (!res.ok) {
+                  const errBody = await res.text()
+                  console.error('Follow-up reminder failed:', res.status, errBody)
                 }
               } catch (err) {
-                console.error('Failed to send follow-up draft (fallback):', err)
+                console.error('Failed to send follow-up reminder:', err)
               }
             })()
-          }, 30_000)
+          }, 10_000)
         }
       } else {
         saveToStorage([fallbackContact, ...contacts])
@@ -402,34 +400,111 @@ export default function NetworkNote() {
     }
   }
 
-  const sendTestEmail = async () => {
-    if (!user || testEmailStatus === 'sending') return
-    const target = contacts[0]
-    if (!target) return
-    setTestEmailStatus('sending')
+  const generateDraft = async (contact: Contact) => {
+    if (!user) return
+    setDraftError(null)
+    setDraftGenerating(true)
     try {
-      const res = await fetch('/api/send-followup', {
+      const res = await fetch('/api/generate-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.uid, contactId: target.id, overrideTo: 'vkliu@uw.edu' }),
+        body: JSON.stringify({ userId: user.uid, contactId: contact.id }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        const updated: Contact = {
+          ...contact,
+          followUpStatus: 'draft_sent',
+          followUpDraft: data.subject != null && data.body != null ? { subject: data.subject, body: data.body } : undefined,
+          followUpChatHistory: [],
+        }
+        setCurrentContact(updated)
+        setContacts((prev) => prev.map((c) => (c.id === contact.id ? updated : c)))
+      } else {
+        setDraftError(data.error || `Request failed (${res.status})`)
+      }
+    } catch (err) {
+      console.error('Failed to generate draft:', err)
+      setDraftError(err instanceof Error ? err.message : 'Failed to generate draft')
+    } finally {
+      setDraftGenerating(false)
+    }
+  }
+
+  const sendFollowupChatMessage = async (contact: Contact, message: string) => {
+    if (!user || !message.trim()) return
+    setFollowupChatSending(true)
+    const userMessage = message.trim()
+    setFollowupChatInput('')
+    const history = contact.followUpChatHistory ?? []
+    const optimisticUserTurn = { role: 'user' as const, content: userMessage }
+    const optimisticContact: Contact = {
+      ...contact,
+      followUpChatHistory: [...history, optimisticUserTurn],
+    }
+    setCurrentContact(optimisticContact)
+    setContacts((prev) => prev.map((c) => (c.id === contact.id ? optimisticContact : c)))
+    try {
+      const res = await fetch('/api/followup-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.uid,
+          contactId: contact.id,
+          message: userMessage,
+          history,
+        }),
+      })
+      const data = await res.json()
+      if (res.ok && data.subject != null && data.body != null) {
+        const updated: Contact = {
+          ...contact,
+          followUpDraft: { subject: data.subject, body: data.body },
+          followUpChatHistory: [
+            ...history,
+            optimisticUserTurn,
+            { role: 'assistant' as const, content: data.assistantMessage ?? 'Draft updated.' },
+          ],
+          ...(typeof data.email === 'string' ? { email: data.email } : {}),
+        }
+        setCurrentContact(updated)
+        setContacts((prev) => prev.map((c) => (c.id === contact.id ? updated : c)))
+      }
+    } catch (err) {
+      console.error('Failed to send chat message:', err)
+      setCurrentContact(contact)
+      setContacts((prev) => prev.map((c) => (c.id === contact.id ? contact : c)))
+    } finally {
+      setFollowupChatSending(false)
+    }
+  }
+
+  const sendFollowupToContact = async (contact: Contact) => {
+    if (!user || !contact.followUpDraft?.subject || !contact.followUpDraft?.body) return
+    setSendingFollowup(true)
+    try {
+      const res = await fetch('/api/send-followup-to-contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.uid,
+          contactId: contact.id,
+          userEmail: user.email ?? undefined,
+        }),
       })
       if (res.ok) {
-        setTestEmailStatus('sent')
-        setContacts((prev) =>
-          prev.map((c) =>
-            c.id === target.id
-              ? { ...c, followUpStatus: 'sent', followUpSentAt: new Date().toISOString() }
-              : c
-          )
-        )
-        setTimeout(() => setTestEmailStatus(null), 4000)
-      } else {
-        setTestEmailStatus('error')
-        setTimeout(() => setTestEmailStatus(null), 4000)
+        const updated: Contact = {
+          ...contact,
+          followUpStatus: 'sent',
+          followUpSentAt: new Date().toISOString(),
+        }
+        setCurrentContact(updated)
+        setContacts((prev) => prev.map((c) => (c.id === contact.id ? updated : c)))
       }
-    } catch {
-      setTestEmailStatus('error')
-      setTimeout(() => setTestEmailStatus(null), 4000)
+    } catch (err) {
+      console.error('Failed to send follow-up:', err)
+    } finally {
+      setSendingFollowup(false)
     }
   }
 
@@ -509,30 +584,6 @@ END:VCARD`
         <p className="font-sans text-warm-500 mt-1">
           {contacts.length} connection{contacts.length !== 1 ? 's' : ''} captured
         </p>
-
-        {user && contacts.length > 0 && (
-          <button
-            onClick={sendTestEmail}
-            disabled={testEmailStatus === 'sending'}
-            className={`mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl font-sans text-sm font-medium transition-all ${
-              testEmailStatus === 'sent'
-                ? 'bg-green-100 text-green-700'
-                : testEmailStatus === 'error'
-                  ? 'bg-red-100 text-red-600'
-                  : 'bg-gold-500/15 text-gold-700 hover:bg-gold-500/25 active:scale-95'
-            }`}
-          >
-            {testEmailStatus === 'sending' ? (
-              <><Loader2 size={15} className="animate-spin" /> Sending email…</>
-            ) : testEmailStatus === 'sent' ? (
-              <><Send size={15} /> Email sent to vkliu@uw.edu!</>
-            ) : testEmailStatus === 'error' ? (
-              <><X size={15} /> Failed — check console</>
-            ) : (
-              <><Send size={15} /> Send test follow-up email</>
-            )}
-          </button>
-        )}
 
         <p className="font-sans text-warm-400 text-sm mt-3 leading-relaxed">
           Voice-powered CRM for conferences. Dictate who you met, get AI-summarized action items, and download contact cards to your phone.
@@ -922,45 +973,144 @@ END:VCARD`
             </div>
           )}
 
-          {/* Follow-up Email Status */}
+          {/* Follow-up: in-app draft + chat + send */}
           {currentContact.followUpStatus === 'pending' && (
-            <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200 flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <Loader2 size={18} className="text-amber-500 mt-0.5 flex-shrink-0 animate-spin" />
-                <div>
-                  <p className="font-sans font-semibold text-amber-700 text-sm">Generating draft…</p>
-                  <p className="font-sans text-amber-600 text-xs mt-0.5">Review email on its way to your inbox</p>
-                </div>
+            <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200 flex items-start gap-3">
+              <Loader2 size={18} className="text-amber-500 mt-0.5 flex-shrink-0 animate-spin" />
+              <div>
+                <p className="font-sans font-semibold text-amber-700 text-sm">Generating draft…</p>
+                <p className="font-sans text-amber-600 text-xs mt-0.5">Draft will appear here in a moment</p>
+                {currentContact.email && (
+                  <p className="font-sans text-amber-600 text-xs mt-1.5 font-medium">
+                    Email will be sent to: {currentContact.email}
+                  </p>
+                )}
               </div>
             </div>
           )}
 
-          {currentContact.followUpStatus === 'draft_sent' && (
-            <div className="bg-amber-50 rounded-2xl p-5 border border-amber-200 flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <Mail size={18} className="text-amber-500 mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="font-sans font-semibold text-amber-700 text-sm">Draft sent to your inbox</p>
-                  <p className="font-sans text-amber-600 text-xs mt-0.5">Click "Send it" or "Try again" in your email</p>
+          {currentContact.email && !currentContact.followUpDraft && currentContact.followUpStatus !== 'pending' && currentContact.followUpStatus !== 'sent' && (
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-cream-200/50">
+              <h3 className="font-sans font-semibold text-warm-900 text-sm uppercase tracking-wider mb-2">
+                Follow-up email
+              </h3>
+              <p className="font-sans text-warm-600 text-sm mb-2">
+                Generate a draft to review and edit in the app, then send.
+              </p>
+              <p className="font-sans text-warm-700 text-sm font-medium mb-4 px-3 py-2 bg-cream-100 rounded-lg">
+                Confirmation: email will be sent to <span className="text-gold-600">{currentContact.email}</span>
+              </p>
+              {draftError && (
+                <p className="font-sans text-red-600 text-sm mb-4 px-3 py-2 bg-red-50 rounded-lg border border-red-200">
+                  {draftError}
+                </p>
+              )}
+              <button
+                onClick={() => generateDraft(currentContact)}
+                disabled={draftGenerating}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-gold-400 to-gold-500 text-white font-sans font-medium flex items-center justify-center gap-2 disabled:opacity-60"
+              >
+                {draftGenerating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
+                {draftGenerating ? 'Generating…' : 'Generate follow-up draft'}
+              </button>
+            </div>
+          )}
+
+          {currentContact.followUpStatus === 'draft_sent' && currentContact.followUpDraft && (
+            <div className="space-y-4">
+              <div className="bg-white rounded-2xl p-6 shadow-sm border border-cream-200/50">
+                <div className="flex items-center gap-2 mb-3">
+                  <Mail size={16} className="text-gold-500" />
+                  <h3 className="font-sans font-semibold text-warm-900 text-sm uppercase tracking-wider">
+                    Follow-up draft
+                  </h3>
+                </div>
+                {currentContact.email && (
+                  <p className="font-sans text-warm-600 text-xs mb-3 px-3 py-2 bg-gold-500/10 rounded-lg border border-gold-500/20">
+                    Will be sent to: <span className="font-medium text-warm-800">{currentContact.email}</span>
+                  </p>
+                )}
+                <p className="font-sans text-warm-700 text-sm font-medium mb-1">Subject: {currentContact.followUpDraft.subject}</p>
+                <div className="font-sans text-warm-700 text-sm whitespace-pre-wrap leading-relaxed border-t border-cream-200 pt-3 mt-3">
+                  {currentContact.followUpDraft.body}
                 </div>
               </div>
+
+              <div className="bg-white rounded-2xl p-5 shadow-sm border border-cream-200/50">
+                <div className="flex items-center gap-2 mb-3">
+                  <MessageSquare size={16} className="text-gold-500" />
+                  <h3 className="font-sans font-semibold text-warm-900 text-sm uppercase tracking-wider">
+                    Edit with AI
+                  </h3>
+                </div>
+                <p className="font-sans text-warm-600 text-xs mb-3">
+                  Ask for changes (e.g. &quot;make it shorter&quot;, &quot;mention the project&quot;, or &quot;send to john@work.com instead&quot;).
+                </p>
+                {(currentContact.followUpChatHistory ?? []).length > 0 && (
+                  <div className="space-y-2 mb-4 max-h-40 overflow-y-auto">
+                    {currentContact.followUpChatHistory!.map((m, i) => (
+                      <div
+                        key={i}
+                        className={`rounded-lg px-3 py-2 text-sm ${m.role === 'user' ? 'bg-gold-500/15 text-warm-800 ml-4' : 'bg-cream-100 text-warm-700 mr-4'}`}
+                      >
+                        {m.content}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={followupChatInput}
+                    onChange={(e) => setFollowupChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        sendFollowupChatMessage(currentContact, followupChatInput)
+                      }
+                    }}
+                    placeholder="e.g. Make it friendlier"
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-cream-200 bg-cream-50 font-sans text-sm focus:border-gold-500 focus:outline-none"
+                    disabled={followupChatSending}
+                  />
+                  <button
+                    onClick={() => sendFollowupChatMessage(currentContact, followupChatInput)}
+                    disabled={followupChatSending || !followupChatInput.trim()}
+                    className="px-4 py-2.5 rounded-xl bg-gold-500 text-white font-sans text-sm font-medium disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {followupChatSending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                    Send
+                  </button>
+                </div>
+              </div>
+
               {user && (
                 <button
-                  onClick={() => sendFollowUpNow(currentContact)}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500 text-white font-sans text-sm font-medium hover:bg-amber-600 active:scale-95 transition-all flex-shrink-0"
+                  onClick={() => sendFollowupToContact(currentContact)}
+                  disabled={sendingFollowup}
+                  className="w-full py-4 rounded-2xl bg-gradient-to-r from-green-600 to-green-700 text-white font-sans font-semibold flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 disabled:opacity-70"
                 >
-                  <Send size={14} />
-                  Resend Draft
+                  {sendingFollowup ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+                  {sendingFollowup ? 'Sending…' : 'Send follow-up to ' + currentContact.name}
                 </button>
+              )}
+              {currentContact.email && (
+                <p className="font-sans text-warm-500 text-xs text-center">
+                  Sends to: {currentContact.email}
+                </p>
               )}
             </div>
           )}
 
           {currentContact.followUpStatus === 'sent' && (
-            <div className="bg-green-50 rounded-2xl p-5 border border-green-200 flex items-center gap-3">
-              <Send size={18} className="text-green-500 flex-shrink-0" />
-              <div>
-                <p className="font-sans font-semibold text-green-700 text-sm">Follow-up sent to {currentContact.name}</p>
+            <div className="bg-green-50 rounded-2xl p-5 border border-green-200 flex items-start gap-3">
+              <Send size={18} className="text-green-500 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="font-sans font-semibold text-green-700 text-sm">Follow-up sent</p>
+                <p className="font-sans text-green-700 text-sm mt-0.5">
+                  Sent to: <span className="font-medium break-all">{currentContact.email || currentContact.name}</span>
+                </p>
+                <p className="font-sans text-green-600 text-xs mt-1">Replies will go to your email</p>
                 {currentContact.followUpSentAt && (
                   <p className="font-sans text-green-600 text-xs mt-0.5">
                     {new Date(currentContact.followUpSentAt).toLocaleString()}

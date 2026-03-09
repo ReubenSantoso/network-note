@@ -29,6 +29,7 @@ export interface Contact {
     followUpDraft?: { subject: string; body: string }
     followUpSentAt?: string
     followUpThreadId?: string
+    followUpChatHistory?: { role: 'user' | 'assistant'; content: string }[]
 }
 
 function contactsCollection(userId: string) {

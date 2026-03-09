@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import sgMail from '@sendgrid/mail'
-import { getAdminDb } from '@/lib/firebase-admin'
+import { getAdminDb, getAdminAuth } from '@/lib/firebase-admin'
 
 function confirmationPage(title: string, message: string): string {
   return `<!DOCTYPE html>
@@ -84,13 +84,24 @@ export async function GET(request: NextRequest) {
 
   sgMail.setApiKey(process.env.SENDGRID_API_KEY)
 
+  let replyTo: string | undefined
   try {
-    await sgMail.send({
+    const userRecord = await getAdminAuth().getUser(userId!)
+    if (userRecord.email) replyTo = userRecord.email
+  } catch {
+    // ignore
+  }
+
+  try {
+    const mailOptions: Parameters<typeof sgMail.send>[0] = {
       to: contactEmail,
       from: process.env.SENDGRID_FROM_EMAIL,
       subject: followUpDraft.subject,
       text: followUpDraft.body,
-    })
+    }
+    if (replyTo) mailOptions.replyTo = replyTo
+
+    await sgMail.send(mailOptions)
 
     await contactRef.update({
       followUpStatus: 'sent',
