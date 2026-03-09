@@ -2,78 +2,21 @@
  * GET /api/followup-reject?userId=...&contactId=...
  *
  * Called when the user clicks "↺ Try again" in the draft review email.
- *
- * What this needs to do (PARTNER TODO):
- *   1. Read the contact from Firestore
- *   2. Call Claude again with the same prompt but add a variation instruction
- *      (e.g. "Write a slightly different version — different opening, different tone")
- *   3. Store the new draft: followUpDraft = { subject, body }
- *   4. Send a new review email to SENDGRID_FROM_EMAIL with approve/reject buttons
- *      (same format as /api/send-followup — you can call that route internally or duplicate the logic)
- *   5. Return a confirmation HTML page so the button click feels resolved
- *
- * Firestore path:  users/{userId}/contacts/{contactId}
- * Relevant fields: all contact fields (for the Claude prompt), email, name
- *
- * Use getAdminDb() from @/lib/firebase-admin for Firestore.
- * Use @anthropic-ai/sdk for Claude. Model: claude-sonnet-4-20250514.
- * Use @sendgrid/mail for the new review email.
- *
- * The approve/reject URLs in the new email should be:
- *   approve: {origin}/api/followup-approve?userId=...&contactId=...
- *   reject:  {origin}/api/followup-reject?userId=...&contactId=...
+ * Generates a new draft with Claude and sends a new review email.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-// import Anthropic from '@anthropic-ai/sdk'
-// import sgMail from '@sendgrid/mail'
-// import { getAdminDb } from '@/lib/firebase-admin'
+import Anthropic from '@anthropic-ai/sdk'
+import sgMail from '@sendgrid/mail'
+import { getAdminDb, getAdminAuth } from '@/lib/firebase-admin'
+import { buildEmailPrompt, buildPlainReview, buildHtmlReview } from '@/lib/email-draft'
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = request.nextUrl
-  const userId = searchParams.get('userId')
-  const contactId = searchParams.get('contactId')
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-  if (!userId || !contactId) {
-    return new NextResponse('Missing userId or contactId', { status: 400 })
-  }
-
-  // ─── PARTNER: implement below ─────────────────────────────────────────────
-  //
-  // const adminDb = getAdminDb()
-  // const contactRef = adminDb.doc(`users/${userId}/contacts/${contactId}`)
-  // const snap = await contactRef.get()
-  // if (!snap.exists) return new NextResponse('Contact not found', { status: 404 })
-  //
-  // const contact = snap.data()!
-  // const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  //
-  // const message = await anthropic.messages.create({
-  //   model: 'claude-sonnet-4-20250514',
-  //   max_tokens: 1024,
-  //   messages: [{ role: 'user', content: buildVariationPrompt(contact) }],
-  // })
-  //
-  // const { subject, body } = JSON.parse(...)
-  //
-  // await contactRef.update({ followUpDraft: { subject, body } })
-  //
-  // // Send new review email (same HTML template as send-followup)
-  // sgMail.setApiKey(process.env.SENDGRID_API_KEY!)
-  // await sgMail.send({ to: process.env.SENDGRID_FROM_EMAIL!, from: process.env.SENDGRID_FROM_EMAIL!,
-  //   subject: `[Review] Follow-up for ${contact.name}`, html: buildHtmlReview(...) })
-  //
-  // ─────────────────────────────────────────────────────────────────────────
-
-  return new NextResponse(
-    confirmationPage('New draft on its way!', 'Check your inbox for a fresh version.'),
-    { headers: { 'Content-Type': 'text/html' } }
-  )
-}
-
-// Variation prompt hint for Claude — add this after the main prompt:
-// "IMPORTANT: Write a DIFFERENT version from the previous draft.
-//  Change the opening line completely, adjust the tone slightly, and suggest a different next step."
+const VARIATION_HINT = `
+IMPORTANT: Write a DIFFERENT version from the previous draft.
+Change the opening line completely, adjust the tone slightly, and suggest a different next step.
+`.trim()
 
 function confirmationPage(title: string, message: string): string {
   return `<!DOCTYPE html>
@@ -101,4 +44,112 @@ function confirmationPage(title: string, message: string): string {
   </div>
 </body>
 </html>`
+}
+
+export async function GET(request: NextRequest) {
+  const { searchParams } = request.nextUrl
+  const userId = searchParams.get('userId')
+  const contactId = searchParams.get('contactId')
+
+  if (!userId || !contactId) {
+    return new NextResponse('Missing userId or contactId', { status: 400 })
+  }
+
+  if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
+    return new NextResponse(confirmationPage('Error', 'Email is not configured.'), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  const adminDb = getAdminDb()
+  const contactRef = adminDb.doc(`users/${userId}/contacts/${contactId}`)
+  const snap = await contactRef.get()
+
+  if (!snap.exists) {
+    return new NextResponse(confirmationPage('Not found', 'Contact not found.'), {
+      status: 404,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  const contact = snap.data()!
+
+  const message = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: buildEmailPrompt(contact, VARIATION_HINT),
+      },
+    ],
+  })
+
+  const textContent = message.content.find((b) => b.type === 'text')
+  if (!textContent || textContent.type !== 'text') {
+    return new NextResponse(confirmationPage('Error', 'Could not generate a new draft.'), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  let subject: string
+  let body: string
+  try {
+    const parsed = JSON.parse(
+      textContent.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+    )
+    subject = parsed.subject
+    body = parsed.body
+  } catch {
+    return new NextResponse(confirmationPage('Error', 'Invalid draft response.'), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  await contactRef.update({
+    followUpDraft: { subject, body },
+  })
+
+  const baseUrl = request.nextUrl.origin
+  const params = `userId=${encodeURIComponent(userId)}&contactId=${encodeURIComponent(contactId)}`
+  const approveUrl = `${baseUrl}/api/followup-approve?${params}`
+  const rejectUrl = `${baseUrl}/api/followup-reject?${params}`
+
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY)
+
+  const replyDomain = process.env.INBOUND_PARSE_REPLY_DOMAIN
+  const replyInstructions = replyDomain
+    ? `Reply to this email with your edits, or type "yes send" to send the follow-up to ${contact.name}.`
+    : undefined
+
+  let reviewTo = process.env.SENDGRID_FROM_EMAIL
+  try {
+    const userRecord = await getAdminAuth().getUser(userId)
+    if (userRecord.email) reviewTo = userRecord.email
+  } catch {
+    // Fall back to SENDGRID_FROM_EMAIL
+  }
+
+  const mailOptions: Parameters<typeof sgMail.send>[0] = {
+    to: reviewTo,
+    from: process.env.SENDGRID_FROM_EMAIL,
+    subject: `[Review] Follow-up for ${contact.name}`,
+    text: buildPlainReview(contact, subject, body, approveUrl, rejectUrl, replyInstructions),
+    html: buildHtmlReview(contact, subject, body, approveUrl, rejectUrl, replyInstructions),
+  }
+
+  const threadId = contact.followUpThreadId as string | undefined
+  if (replyDomain && threadId) {
+    mailOptions.replyTo = `reply+${threadId}@${replyDomain}`
+  }
+
+  await sgMail.send(mailOptions)
+
+  return new NextResponse(
+    confirmationPage('New draft on its way!', 'Check your inbox for a fresh version.'),
+    { headers: { 'Content-Type': 'text/html' } }
+  )
 }

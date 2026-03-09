@@ -1,0 +1,12 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "contacts",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "followUpThreadId", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

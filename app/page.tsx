@@ -233,13 +233,21 @@ export default function NetworkNote() {
 
       if (user) {
         await saveContact(user.uid, newContact)
-        // Immediately trigger draft review email (fire-and-forget)
-        if (contactEmail) {
-          fetch('/api/send-followup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: user.uid, contactId: newContact.id }),
-          }).catch(console.error)
+        // Trigger draft review email 30 seconds later (fire-and-forget)
+        if (contactEmail && user.email) {
+          setTimeout(
+            () =>
+              fetch('/api/send-followup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  userId: user.uid,
+                  contactId: newContact.id,
+                  userEmail: user.email,
+                }),
+              }).catch(console.error),
+            30_000
+          )
         }
       } else {
         saveToStorage([newContact, ...contacts])
@@ -273,12 +281,20 @@ export default function NetworkNote() {
       }
       if (user) {
         await saveContact(user.uid, fallbackContact)
-        if (fallbackEmail) {
-          fetch('/api/send-followup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: user.uid, contactId: fallbackContact.id }),
-          }).catch(console.error)
+        if (fallbackEmail && user.email) {
+          setTimeout(
+            () =>
+              fetch('/api/send-followup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  userId: user.uid,
+                  contactId: fallbackContact.id,
+                  userEmail: user.email,
+                }),
+              }).catch(console.error),
+            30_000
+          )
         }
       } else {
         saveToStorage([fallbackContact, ...contacts])
@@ -338,7 +354,11 @@ export default function NetworkNote() {
       const res = await fetch('/api/send-followup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.uid, contactId: contact.id }),
+        body: JSON.stringify({
+          userId: user.uid,
+          contactId: contact.id,
+          userEmail: user.email ?? undefined,
+        }),
       })
       if (res.ok) {
         const updated: Contact = {

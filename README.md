@@ -33,22 +33,23 @@ Voice-powered networking CRM. Record conversations at events, get AI-extracted c
    → Contact saved to Firestore: users/{uid}/contacts/{id}
    → followUpStatus = 'pending'
 
-④ Draft review email fires immediately (fire-and-forget after save)
+④ Draft review email fires 30 seconds after save (fire-and-forget)
    POST /api/send-followup
    → Claude generates a personalized follow-up email draft
    → Draft stored in Firestore: followUpDraft = { subject, body }
    → followUpStatus = 'draft_sent'
-   → Review email sent to YOU (account owner) with two buttons:
+   → Review email sent to logged-in user's email with two buttons:
        ✓ Send it   → GET /api/followup-approve?userId=...&contactId=...
        ↺ Try again → GET /api/followup-reject?userId=...&contactId=...
 
 ⑤ You review the draft in your inbox
-   Option A — "Send it":
+   Option A — "Send it" (or reply "yes send"):
      → /api/followup-approve sends the draft to contact.email
      → Firestore: followUpStatus = 'sent', followUpSentAt = now
-   Option B — "Try again":
-     → /api/followup-reject generates a new draft
+   Option B — "Try again" (or reply with edits):
+     → /api/followup-reject generates a new draft (or /api/inbound-email applies edits)
      → New review email arrives in your inbox
+     → Reply to email to iterate; say "yes send" when ready
      → Repeat until satisfied
 
 ⑥ Contact card in the app updates automatically
@@ -72,10 +73,13 @@ network-note/
 │       ├── send-followup/
 │       │   └── route.ts            POST: generates draft, sends review email to owner
 │       ├── followup-approve/
-│       │   └── route.ts            GET:  [PARTNER TODO] sends draft to contact
-│       └── followup-reject/
-│           └── route.ts            GET:  [PARTNER TODO] regenerates draft, re-emails owner
+│       │   └── route.ts            GET:  sends draft to contact
+│       ├── followup-reject/
+│       │   └── route.ts            GET:  regenerates draft, re-emails owner
+│       └── inbound-email/
+│           └── route.ts            POST: SendGrid Inbound Parse — handle email replies
 ├── lib/
+│   ├── email-draft.ts              Shared email prompt and template helpers
 │   ├── firebase.ts                 Firebase client SDK init (used in browser + API routes)
 │   ├── firebase-admin.ts           Firebase Admin SDK — lazy init, server-side only
 │   ├── firestore.ts                Contact interface + saveContact / loadContacts / deleteContact
@@ -214,6 +218,12 @@ NEXT_PUBLIC_FIREBASE_APP_ID=...
 FIREBASE_ADMIN_PROJECT_ID=...
 FIREBASE_ADMIN_CLIENT_EMAIL=firebase-adminsdk-...@project.iam.gserviceaccount.com
 FIREBASE_ADMIN_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
+# Optional: Email reply flow (chat with agent via email)
+# Set to your Inbound Parse domain (e.g. reply.yourdomain.com) to enable Reply-To
+# Configure SendGrid Inbound Parse: hostname = INBOUND_PARSE_REPLY_DOMAIN, URL = https://yourdomain.com/api/inbound-email
+# MX record: INBOUND_PARSE_REPLY_DOMAIN → mx.sendgrid.net
+INBOUND_PARSE_REPLY_DOMAIN=
 ```
 
 ---
@@ -236,18 +246,15 @@ FIREBASE_ADMIN_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE K
 
 ---
 
-## Partner Handoff
+## Inbound Parse (Email Reply Flow)
 
-Two route files need the approve/reject logic implemented. Both are fully stubbed:
+To enable "chat with the agent" via email reply:
 
-**`app/api/followup-approve/route.ts`**
-- Uncomment the implementation block
-- Use `getAdminDb()` from `@/lib/firebase-admin`
-- Use `sgMail` from `@sendgrid/mail`
+1. **Domain:** Use a domain you control (e.g. `reply.yourdomain.com`).
+2. **SendGrid Inbound Parse:** Settings → Inbound Parse → Add host & URL.
+   - Hostname: `reply.yourdomain.com` (or your `INBOUND_PARSE_REPLY_DOMAIN`)
+   - URL: `https://yourdomain.com/api/inbound-email`
+3. **MX record:** Point `reply.yourdomain.com` to `mx.sendgrid.net`.
+4. **Env:** Set `INBOUND_PARSE_REPLY_DOMAIN=reply.yourdomain.com`.
 
-**`app/api/followup-reject/route.ts`**
-- Uncomment the implementation block
-- Copy the Claude prompt from `send-followup/route.ts` and append the variation instruction
-- Copy the `buildHtmlReview` function from `send-followup/route.ts` (or extract to a shared lib)
-
-All context, variable names, and Firestore paths are documented in each file's header comment.
+Draft emails will include Reply-To `reply+{threadId}@reply.yourdomain.com`. When the user replies, SendGrid POSTs to the webhook. The agent classifies intent (send vs edit) and either sends to the contact or generates a revised draft.

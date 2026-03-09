@@ -28,6 +28,7 @@ export interface Contact {
     followUpStatus?: 'pending' | 'draft_sent' | 'sent' | 'skipped'
     followUpDraft?: { subject: string; body: string }
     followUpSentAt?: string
+    followUpThreadId?: string
 }
 
 function contactsCollection(userId: string) {

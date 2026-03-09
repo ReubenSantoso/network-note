@@ -2,60 +2,12 @@
  * GET /api/followup-approve?userId=...&contactId=...
  *
  * Called when the user clicks "✓ Send it" in the draft review email.
- *
- * What this needs to do (PARTNER TODO):
- *   1. Read the contact document from Firestore
- *   2. Grab contact.followUpDraft.subject + contact.followUpDraft.body
- *   3. Send that email to contact.email via SendGrid (plain text)
- *   4. Update Firestore: followUpStatus = 'sent', followUpSentAt = now
- *   5. Return a confirmation HTML page so the button click feels resolved
- *
- * Firestore path:  users/{userId}/contacts/{contactId}
- * Relevant fields: email, name, followUpDraft.subject, followUpDraft.body
- *
- * Use getAdminDb() from @/lib/firebase-admin for server-side Firestore access.
- * Use sgMail from @sendgrid/mail for sending (SENDGRID_API_KEY + SENDGRID_FROM_EMAIL in env).
+ * Sends the stored draft to the contact and updates Firestore.
  */
 
 import { NextRequest, NextResponse } from 'next/server'
-// import sgMail from '@sendgrid/mail'
-// import { getAdminDb } from '@/lib/firebase-admin'
-
-export async function GET(request: NextRequest) {
-  const { searchParams } = request.nextUrl
-  const userId = searchParams.get('userId')
-  const contactId = searchParams.get('contactId')
-
-  if (!userId || !contactId) {
-    return new NextResponse('Missing userId or contactId', { status: 400 })
-  }
-
-  // ─── PARTNER: implement below ─────────────────────────────────────────────
-  //
-  // const adminDb = getAdminDb()
-  // const contactRef = adminDb.doc(`users/${userId}/contacts/${contactId}`)
-  // const snap = await contactRef.get()
-  // if (!snap.exists) return new NextResponse('Contact not found', { status: 404 })
-  //
-  // const contact = snap.data()!
-  // const { subject, body } = contact.followUpDraft
-  //
-  // sgMail.setApiKey(process.env.SENDGRID_API_KEY!)
-  // await sgMail.send({
-  //   to: contact.email,
-  //   from: process.env.SENDGRID_FROM_EMAIL!,
-  //   subject,
-  //   text: body,
-  // })
-  //
-  // await contactRef.update({ followUpStatus: 'sent', followUpSentAt: new Date().toISOString() })
-  //
-  // ─────────────────────────────────────────────────────────────────────────
-
-  return new NextResponse(confirmationPage('Email sent!', 'Your follow-up has been delivered.'), {
-    headers: { 'Content-Type': 'text/html' },
-  })
-}
+import sgMail from '@sendgrid/mail'
+import { getAdminDb } from '@/lib/firebase-admin'
 
 function confirmationPage(title: string, message: string): string {
   return `<!DOCTYPE html>
@@ -83,4 +35,76 @@ function confirmationPage(title: string, message: string): string {
   </div>
 </body>
 </html>`
+}
+
+export async function GET(request: NextRequest) {
+  const { searchParams } = request.nextUrl
+  const userId = searchParams.get('userId')
+  const contactId = searchParams.get('contactId')
+
+  if (!userId || !contactId) {
+    return new NextResponse('Missing userId or contactId', { status: 400 })
+  }
+
+  if (!process.env.SENDGRID_API_KEY || !process.env.SENDGRID_FROM_EMAIL) {
+    return new NextResponse(confirmationPage('Error', 'Email is not configured.'), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  const adminDb = getAdminDb()
+  const contactRef = adminDb.doc(`users/${userId}/contacts/${contactId}`)
+  const snap = await contactRef.get()
+
+  if (!snap.exists) {
+    return new NextResponse(confirmationPage('Not found', 'Contact not found.'), {
+      status: 404,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  const contact = snap.data()!
+  const followUpDraft = contact.followUpDraft as { subject: string; body: string } | undefined
+  const contactEmail = contact.email as string | undefined
+
+  if (!followUpDraft?.subject || !followUpDraft?.body) {
+    return new NextResponse(confirmationPage('Error', 'No draft to send.'), {
+      status: 400,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  if (!contactEmail) {
+    return new NextResponse(confirmationPage('Error', 'This contact has no email on file.'), {
+      status: 400,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
+
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY)
+
+  try {
+    await sgMail.send({
+      to: contactEmail,
+      from: process.env.SENDGRID_FROM_EMAIL,
+      subject: followUpDraft.subject,
+      text: followUpDraft.body,
+    })
+
+    await contactRef.update({
+      followUpStatus: 'sent',
+      followUpSentAt: new Date().toISOString(),
+    })
+
+    return new NextResponse(confirmationPage('Email sent!', 'Your follow-up has been delivered.'), {
+      headers: { 'Content-Type': 'text/html' },
+    })
+  } catch (err) {
+    console.error('Followup approve error:', err)
+    return new NextResponse(confirmationPage('Error', 'Failed to send email. Please try again.'), {
+      status: 500,
+      headers: { 'Content-Type': 'text/html' },
+    })
+  }
 }
