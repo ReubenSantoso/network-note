@@ -37,7 +37,14 @@ function contactsCollection(userId: string) {
 
 export async function saveContact(userId: string, contact: Contact): Promise<void> {
     const docRef = doc(db, 'users', userId, 'contacts', contact.id)
-    await setDoc(docRef, contact)
+    // Firestore does not allow undefined field values. Strip them out before saving.
+    const cleaned: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(contact)) {
+        if (value !== undefined) {
+            cleaned[key] = value
+        }
+    }
+    await setDoc(docRef, cleaned)
 }
 
 export async function loadContacts(userId: string): Promise<Contact[]> {

@@ -233,21 +233,35 @@ export default function NetworkNote() {
 
       if (user) {
         await saveContact(user.uid, newContact)
-        // Trigger draft review email 30 seconds later (fire-and-forget)
+        // Trigger draft review email 30 seconds later, then update status to 'draft_sent' on success
         if (contactEmail && user.email) {
-          setTimeout(
-            () =>
-              fetch('/api/send-followup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  userId: user.uid,
-                  contactId: newContact.id,
-                  userEmail: user.email,
-                }),
-              }).catch(console.error),
-            30_000
-          )
+          setTimeout(() => {
+            ;(async () => {
+              try {
+                const res = await fetch('/api/send-followup', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    userId: user.uid,
+                    contactId: newContact.id,
+                    userEmail: user.email,
+                  }),
+                })
+                if (res.ok) {
+                  const updated: Contact = {
+                    ...newContact,
+                    followUpStatus: 'draft_sent',
+                  }
+                  setContacts(prev => prev.map(c => (c.id === newContact.id ? updated : c)))
+                  setCurrentContact(prev =>
+                    prev && prev.id === newContact.id ? updated : prev
+                  )
+                }
+              } catch (err) {
+                console.error('Failed to send follow-up draft:', err)
+              }
+            })()
+          }, 30_000)
         }
       } else {
         saveToStorage([newContact, ...contacts])
@@ -282,19 +296,33 @@ export default function NetworkNote() {
       if (user) {
         await saveContact(user.uid, fallbackContact)
         if (fallbackEmail && user.email) {
-          setTimeout(
-            () =>
-              fetch('/api/send-followup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  userId: user.uid,
-                  contactId: fallbackContact.id,
-                  userEmail: user.email,
-                }),
-              }).catch(console.error),
-            30_000
-          )
+          setTimeout(() => {
+            ;(async () => {
+              try {
+                const res = await fetch('/api/send-followup', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    userId: user.uid,
+                    contactId: fallbackContact.id,
+                    userEmail: user.email,
+                  }),
+                })
+                if (res.ok) {
+                  const updated: Contact = {
+                    ...fallbackContact,
+                    followUpStatus: 'draft_sent',
+                  }
+                  setContacts(prev => prev.map(c => (c.id === fallbackContact.id ? updated : c)))
+                  setCurrentContact(prev =>
+                    prev && prev.id === fallbackContact.id ? updated : prev
+                  )
+                }
+              } catch (err) {
+                console.error('Failed to send follow-up draft (fallback):', err)
+              }
+            })()
+          }, 30_000)
         }
       } else {
         saveToStorage([fallbackContact, ...contacts])
